@@ -41,6 +41,9 @@ type iterativeDataset struct {
 
 	// jsonData is a channel that receives the raw JSON data from the Kusto service.
 	jsonData chan interface{}
+
+	// isProgressive indicates whether the dataset uses progressive mode.
+	isProgressive bool
 }
 
 // NewIterativeDataset creates a new IterativeDataset from a ReadCloser.
@@ -135,32 +138,43 @@ func readDataSet(d *iterativeDataset) error {
 
 	var err error
 
-	// The first frame should be a DataSetHeader. We don't need to save it - just validate it.
-	if header, _, err := nextFrame(d); err == nil {
-		if err = validateDataSetHeader(header); err != nil {
-			return err
+	// The first frame should be a DataSetHeader.
+	if headerDec, _, err := nextFrame(d); err == nil {
+		header, parseErr := parseDataSetHeader(headerDec)
+		if parseErr != nil {
+			return parseErr
 		}
+		d.isProgressive = header.IsProgressive
 	} else {
 		return err
 	}
 
-	// Next up, we expect the QueryProperties table, which is a DataTable.
-	// We save it and send it after the primary results.
+	// Next up, we expect the QueryProperties table.
+	// In fragmented mode this is a DataTable; in progressive mode it may
+	// arrive as a TableHeader → TableFragment* → TableCompletion sequence.
 	if decoder, frameType, err := nextFrame(d); err == nil {
-		if frameType != DataTableFrameType {
-			return errors.ES(errors.OpQuery, errors.KInternal, "unexpected frame type %s, expected DataTable", frameType)
-		}
-
-		if err = handleDataTable(d, decoder); err != nil {
-			return err
+		switch frameType {
+		case DataTableFrameType:
+			if err = handleDataTable(d, decoder); err != nil {
+				return err
+			}
+		case TableHeaderFrameType:
+			if err = readSecondaryTable(d, decoder); err != nil {
+				return err
+			}
+		default:
+			return errors.ES(errors.OpQuery, errors.KInternal,
+				"unexpected frame type %s for QueryProperties, expected DataTable or TableHeader", frameType)
 		}
 	} else {
 		return err
 	}
 
-	// We then iterate over the primary tables.
-	// If we get a TableHeader, we read the table.
-	// If we get a DataTable, it means we have reached QueryCompletionInformation
+	// We then iterate over the remaining tables.
+	// If we get a TableHeader, we peek its TableKind to route it:
+	//   - PrimaryResult → readPrimaryTable (streamed to user)
+	//   - anything else → readSecondaryTable (buffered internally)
+	// If we get a DataTable, it's a secondary table in fragmented mode.
 	// If we get a DataSetCompletion, we are done.
 	for decoder, frameType, err := nextFrame(d); err == nil; decoder, frameType, err = nextFrame(d) {
 		if frameType == DataTableFrameType {
@@ -171,8 +185,24 @@ func readDataSet(d *iterativeDataset) error {
 		}
 
 		if frameType == TableHeaderFrameType {
-			if err = readPrimaryTable(d, decoder); err != nil {
+			// Decode the header to check if this is a primary result or a
+			// secondary table (QueryCompletionInformation, etc.).
+			header := TableHeader{}
+			if err = decoder.Decode(&header); err != nil {
 				return err
+			}
+
+			if header.TableKind == PrimaryResultTableKind {
+				if err = handleTableHeader(d, header); err != nil {
+					return err
+				}
+				if err = readPrimaryTableFragments(d, header); err != nil {
+					return err
+				}
+			} else {
+				if err = readSecondaryTableFragments(d, header); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -239,14 +269,10 @@ func combineOneApiErrors(errs []OneApiError) error {
 }
 
 // readPrimaryTable reads a primary table from the dataset.
-// A primary table consists of:
-// - A TableHeader - describes the structure of the table and its columns.
-// - A series of TableFragment - contains the rows of the table.
-// - A TableCompletion - signals the end of the table, and contains any errors that might have occurred.
+// Decodes the header from dec, then reads fragments until TableCompletion.
 func readPrimaryTable(d *iterativeDataset, dec *json.Decoder) error {
 	header := TableHeader{}
-	err := dec.Decode(&header)
-	if err != nil {
+	if err := dec.Decode(&header); err != nil {
 		return err
 	}
 
@@ -254,6 +280,12 @@ func readPrimaryTable(d *iterativeDataset, dec *json.Decoder) error {
 		return err
 	}
 
+	return readPrimaryTableFragments(d, header)
+}
+
+// readPrimaryTableFragments reads TableFragment/TableProgress/TableCompletion
+// frames for an already-opened primary table.
+func readPrimaryTableFragments(d *iterativeDataset, header TableHeader) error {
 	for i := 0; ; {
 		dec, frameType, err := nextFrame(d)
 		if err != nil {
@@ -265,8 +297,20 @@ func readPrimaryTable(d *iterativeDataset, dec *json.Decoder) error {
 			if err != nil {
 				return err
 			}
+			if fragment.TableFragmentType == "DataReplace" {
+				return errors.ES(errors.OpQuery, errors.KInternal,
+					"DataReplace TableFragment is not supported by the streaming API")
+			}
 			i += len(fragment.Rows)
 			if err = handleTableFragment(d, fragment); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if frameType == TableProgressFrameType {
+			var progress TableProgress
+			if err = dec.Decode(&progress); err != nil {
 				return err
 			}
 			continue
@@ -286,10 +330,71 @@ func readPrimaryTable(d *iterativeDataset, dec *json.Decoder) error {
 			break
 		}
 
-		return errors.ES(errors.OpQuery, errors.KInternal, "unexpected frame type %s, expected TableFragment or TableCompletion", frameType)
+		return errors.ES(errors.OpQuery, errors.KInternal, "unexpected frame type %s, expected TableFragment, TableProgress, or TableCompletion", frameType)
 	}
 
 	return nil
+}
+
+// readSecondaryTable reads a non-primary table that arrives as a
+// TableHeader → TableFragment* → TableCompletion sequence.
+// This happens in progressive mode where secondary tables (QueryProperties,
+// QueryCompletionInformation) use the same framing as primary tables.
+func readSecondaryTable(d *iterativeDataset, dec *json.Decoder) error {
+	header := TableHeader{}
+	if err := dec.Decode(&header); err != nil {
+		return err
+	}
+
+	return readSecondaryTableFragments(d, header)
+}
+
+// readSecondaryTableFragments buffers all rows from a secondary table's
+// fragment sequence, then dispatches via processSecondaryDataTable.
+func readSecondaryTableFragments(d *iterativeDataset, header TableHeader) error {
+	var rows []query.Row
+	for {
+		dec, frameType, err := nextFrame(d)
+		if err != nil {
+			return err
+		}
+
+		if frameType == TableFragmentFrameType {
+			fragment := TableFragment{Columns: header.Columns, PreviousIndex: len(rows)}
+			if err = dec.Decode(&fragment); err != nil {
+				return err
+			}
+			rows = append(rows, fragment.Rows...)
+			continue
+		}
+
+		if frameType == TableProgressFrameType {
+			var progress TableProgress
+			if err = dec.Decode(&progress); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if frameType == TableCompletionFrameType {
+			completion := TableCompletion{}
+			if err = dec.Decode(&completion); err != nil {
+				return err
+			}
+			if completion.OneApiErrors != nil {
+				if combinedErr := combineOneApiErrors(completion.OneApiErrors); combinedErr != nil {
+					return combinedErr
+				}
+			}
+			break
+		}
+
+		return errors.ES(errors.OpQuery, errors.KInternal,
+			"unexpected frame type %s in secondary table, expected TableFragment, TableProgress, or TableCompletion", frameType)
+	}
+
+	dt := DataTable{Header: header, Rows: rows}
+	return processSecondaryDataTable(d, dt)
 }
 
 // handleDataTable reads a DataTable frame from the dataset, which aren't iterative.
@@ -300,13 +405,17 @@ func handleDataTable(d *iterativeDataset, dec *json.Decoder) error {
 		return err
 	}
 
+	return processSecondaryDataTable(d, dt)
+}
+
+// processSecondaryDataTable dispatches a decoded secondary table by its kind.
+// Used by both handleDataTable (fragmented mode) and readSecondaryTable (progressive mode).
+func processSecondaryDataTable(d *iterativeDataset, dt DataTable) error {
 	if dt.Header.TableKind == PrimaryResultTableKind {
 		return errors.ES(d.Op(), errors.KInternal, "received a DataTable frame for a primary result table")
 	}
 	switch dt.Header.TableKind {
 	case QueryPropertiesKind:
-		// When we get this, we want to store it and not send it to the user immediately.
-		// We will wait until after the primary results (when we get the QueryCompletionInformation table) and then send it.
 		res, err := newTable(d, dt)
 		if err != nil {
 			return err

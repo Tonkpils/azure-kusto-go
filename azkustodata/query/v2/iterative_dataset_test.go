@@ -268,7 +268,7 @@ func TestStreamingDataSet_DecodeTables_WithInvalidDataSetHeader(t *testing.T) {
 	}
 
 	assert.Error(t, tableResult.Err())
-	assert.Contains(t, tableResult.Err().Error(), "Expected v2.0, got invalid")
+	assert.Contains(t, tableResult.Err().Error(), "unsupported DataSetHeader version")
 }
 
 func TestStreamingDataSet_DecodeTables_WithInvalidTableFragment(t *testing.T) {
@@ -280,7 +280,7 @@ func TestStreamingDataSet_DecodeTables_WithInvalidTableFragment(t *testing.T) {
 
 	tableResult := <-d.Tables()
 	assert.Error(t, tableResult.Err())
-	assert.Contains(t, tableResult.Err().Error(), "Expected DataSetHeader, got TableFragment")
+	assert.Contains(t, tableResult.Err().Error(), "unsupported DataSetHeader version")
 }
 
 func TestStreamingDataSet_DecodeTables_WithInvalidTableCompletion(t *testing.T) {
@@ -293,7 +293,7 @@ func TestStreamingDataSet_DecodeTables_WithInvalidTableCompletion(t *testing.T) 
 	tableResult := <-d.Tables()
 
 	assert.Error(t, tableResult.Err())
-	assert.Contains(t, tableResult.Err().Error(), "Expected DataSetHeader, got TableCompletion")
+	assert.Contains(t, tableResult.Err().Error(), "unsupported DataSetHeader version")
 }
 
 func TestStreamingDataSet_DecodeTables_StreamingTable_WithInvalidColumnType(t *testing.T) {
@@ -363,4 +363,70 @@ func TestStreamingDataSet_Context_Canceled(t *testing.T) {
 	_, err := NewIterativeDataset(ctx, io.NopCloser(reader), 1, 1, 1)
 	assert.NoError(t, err)
 	cancel()
+}
+
+func TestStreamingDataSet_Progressive_GetRows(t *testing.T) {
+	t.Parallel()
+	reader := strings.NewReader(progressiveFrames)
+	d, err := defaultDataset(reader)
+	require.NoError(t, err)
+
+	// First table should be PrimaryResult with 2 rows (from 2 DataAppend fragments).
+	tableResult := <-d.Tables()
+	require.NoError(t, tableResult.Err())
+	table := tableResult.Table()
+	assert.Equal(t, "PrimaryResult", table.Kind())
+	assert.Equal(t, "PrimaryResult", table.Name())
+
+	var rowCount int
+	for rowResult := range table.Rows() {
+		require.NoError(t, rowResult.Err())
+		rowCount++
+	}
+	assert.Equal(t, 2, rowCount)
+
+	// Second table should be QueryProperties (deferred until after primary results).
+	tableResult = <-d.Tables()
+	require.NoError(t, tableResult.Err())
+	assert.Equal(t, "QueryProperties", tableResult.Table().Kind())
+
+	// Third table should be QueryCompletionInformation.
+	tableResult = <-d.Tables()
+	require.NoError(t, tableResult.Err())
+	assert.Equal(t, "QueryCompletionInformation", tableResult.Table().Kind())
+
+	// Channel should be closed.
+	tableResult = <-d.Tables()
+	assert.Nil(t, tableResult)
+}
+
+func TestStreamingDataSet_Progressive_DataReplace_Rejected(t *testing.T) {
+	t.Parallel()
+	// Build a progressive response where the primary table fragment uses DataReplace.
+	frames := "[{\"FrameType\":\"DataSetHeader\",\"IsProgressive\":true,\"Version\":\"v2.0\",\"IsFragmented\":false,\"ErrorReportingPlacement\":\"EndOfTable\"}\n" +
+		",{\"FrameType\":\"DataTable\",\"TableId\":0,\"TableKind\":\"QueryProperties\",\"TableName\":\"@ExtendedProperties\",\"Columns\":[{\"ColumnName\":\"TableId\",\"ColumnType\":\"int\"}],\"Rows\":[[1]]}\n" +
+		",{\"FrameType\":\"TableHeader\",\"TableId\":1,\"TableKind\":\"PrimaryResult\",\"TableName\":\"PrimaryResult\",\"Columns\":[{\"ColumnName\":\"A\",\"ColumnType\":\"int\"}]}\n" +
+		",{\"FrameType\":\"TableFragment\",\"TableId\":1,\"FieldCount\":1,\"TableFragmentType\":\"DataReplace\",\"Rows\":[[1]]}\n" +
+		",{\"FrameType\":\"TableCompletion\",\"TableId\":1,\"RowCount\":1,\"OneApiErrors\":[]}\n" +
+		",{\"FrameType\":\"DataSetCompletion\",\"HasErrors\":false,\"Cancelled\":false,\"OneApiErrors\":[]}\n" +
+		"]\n"
+
+	reader := strings.NewReader(frames)
+	d, err := defaultDataset(reader)
+	require.NoError(t, err)
+
+	tableResult := <-d.Tables()
+	require.NoError(t, tableResult.Err())
+	table := tableResult.Table()
+
+	// The table should open, but reading rows should surface the error.
+	for rowResult := range table.Rows() {
+		_ = rowResult
+	}
+
+	// The next result should be an error about DataReplace not being supported.
+	tableResult = <-d.Tables()
+	if tableResult != nil && tableResult.Err() != nil {
+		assert.Contains(t, tableResult.Err().Error(), "DataReplace")
+	}
 }

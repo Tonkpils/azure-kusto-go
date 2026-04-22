@@ -1,0 +1,14 @@
+[{"FrameType":"DataSetHeader","IsProgressive":true,"Version":"v2.0","IsFragmented":false,"ErrorReportingPlacement":"EndOfTable"}
+,{"FrameType":"TableHeader","TableId":0,"TableKind":"QueryProperties","TableName":"@ExtendedProperties","Columns":[{"ColumnName":"TableId","ColumnType":"int"},{"ColumnName":"Key","ColumnType":"string"},{"ColumnName":"Value","ColumnType":"dynamic"}]}
+,{"FrameType":"TableFragment","TableId":0,"FieldCount":3,"TableFragmentType":"DataAppend","Rows":[[1,"Visualization","{}"]]}
+,{"FrameType":"TableCompletion","TableId":0,"RowCount":1,"OneApiErrors":[]}
+,{"FrameType":"TableHeader","TableId":1,"TableKind":"PrimaryResult","TableName":"PrimaryResult","Columns":[{"ColumnName":"A","ColumnType":"int"},{"ColumnName":"B","ColumnType":"string"}]}
+,{"FrameType":"TableFragment","TableId":1,"FieldCount":2,"TableFragmentType":"DataAppend","Rows":[[1,"hello"]]}
+,{"FrameType":"TableProgress","TableId":1,"TableProgress":50.0}
+,{"FrameType":"TableFragment","TableId":1,"FieldCount":2,"TableFragmentType":"DataAppend","Rows":[[2,"world"]]}
+,{"FrameType":"TableCompletion","TableId":1,"RowCount":2,"OneApiErrors":[]}
+,{"FrameType":"TableHeader","TableId":2,"TableKind":"QueryCompletionInformation","TableName":"QueryCompletionInformation","Columns":[{"ColumnName":"Timestamp","ColumnType":"datetime"},{"ColumnName":"ClientRequestId","ColumnType":"string"},{"ColumnName":"ActivityId","ColumnType":"guid"}]}
+,{"FrameType":"TableFragment","TableId":2,"FieldCount":3,"TableFragmentType":"DataAppend","Rows":[["2024-01-15T19:45:16.8109217Z","KGC.execute;abc123","1ddf9081-c289-42c8-8c3e-323698910b76"]]}
+,{"FrameType":"TableCompletion","TableId":2,"RowCount":1,"OneApiErrors":[]}
+,{"FrameType":"DataSetCompletion","HasErrors":false,"Cancelled":false,"OneApiErrors":[]}
+]

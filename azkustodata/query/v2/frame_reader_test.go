@@ -24,6 +24,9 @@ var twoTables string
 //go:embed testData/error.txt
 var errorText string
 
+//go:embed testData/progressiveFrames.json
+var progressiveFrames string
+
 func TestDecodeValidFrames(t *testing.T) {
 	reader := bytes.NewReader([]byte(validFrames))
 	f, err := newFrameReader(io.NopCloser(reader), context.Background())

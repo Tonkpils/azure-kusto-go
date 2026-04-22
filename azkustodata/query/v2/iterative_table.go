@@ -57,7 +57,7 @@ func NewIterativeTable(dataset *iterativeDataset, th TableHeader) (query.Iterati
 func (t *iterativeTable) finishTable(errs []OneApiError, cancelError error) {
 	if cancelError != nil {
 		t.reportError(cancelError)
-	} else if errs != nil {
+	} else if len(errs) > 0 {
 		t.reportError(combineOneApiErrors(errs))
 	}
 	close(t.rows)

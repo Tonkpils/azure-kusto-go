@@ -35,15 +35,17 @@ const (
 	DataTableFrameType         FrameType = "DataTable"
 	TableHeaderFrameType       FrameType = "TableHeader"
 	TableFragmentFrameType     FrameType = "TableFragment"
+	TableProgressFrameType     FrameType = "TableProgress"
 	TableCompletionFrameType   FrameType = "TableCompletion"
 	DataSetCompletionFrameType FrameType = "DataSetCompletion"
 )
 
 type DataSetHeader struct {
-	IsProgressive           bool
-	Version                 string
-	IsFragmented            bool
-	ErrorReportingPlacement string
+	FrameType               FrameType `json:"FrameType"`
+	IsProgressive           bool      `json:"IsProgressive"`
+	Version                 string    `json:"Version"`
+	IsFragmented            bool      `json:"IsFragmented"`
+	ErrorReportingPlacement string    `json:"ErrorReportingPlacement"`
 }
 
 type TableHeader struct {
@@ -54,9 +56,15 @@ type TableHeader struct {
 }
 
 type TableFragment struct {
-	Columns       []query.Column
-	Rows          []query.Row
-	PreviousIndex int
+	Columns           []query.Column
+	Rows              []query.Row
+	PreviousIndex     int
+	TableFragmentType string
+}
+
+type TableProgress struct {
+	TableId       int
+	TableProgress float64
 }
 
 type TableCompletion struct {

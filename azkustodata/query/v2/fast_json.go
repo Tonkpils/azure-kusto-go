@@ -3,11 +3,12 @@ package v2
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+
 	"github.com/Azure/azure-kusto-go/azkustodata/errors"
 	"github.com/Azure/azure-kusto-go/azkustodata/query"
 	"github.com/Azure/azure-kusto-go/azkustodata/types"
 	"github.com/Azure/azure-kusto-go/azkustodata/value"
-	"io"
 )
 
 func newDecoder(r io.Reader) *json.Decoder {
@@ -23,10 +24,11 @@ func newDecoder(r io.Reader) *json.Decoder {
 func (t *TableFragment) UnmarshalJSON(b []byte) error {
 	decoder := newDecoder(bytes.NewReader(b))
 
-	rows, err := decodeTableFragment(b, decoder, t.Columns, t.PreviousIndex)
+	fragmentType, rows, err := decodeTableFragment(b, decoder, t.Columns, t.PreviousIndex)
 	if err != nil {
 		return err
 	}
+	t.TableFragmentType = fragmentType
 	t.Rows = rows
 
 	return nil
@@ -42,7 +44,7 @@ func (q *DataTable) UnmarshalJSON(b []byte) error {
 		return err
 	}
 
-	rows, err := decodeTableFragment(b, decoder, q.Header.Columns, 0)
+	_, rows, err := decodeTableFragment(b, decoder, q.Header.Columns, 0)
 	if err != nil {
 		return err
 	}
@@ -105,25 +107,42 @@ func decodeHeader(decoder *json.Decoder, t *TableHeader, frameType FrameType) er
 }
 
 // decodeTableFragment decodes the common part of a TableFragment and DataTable - the rows.
-func decodeTableFragment(b []byte, decoder *json.Decoder, columns []query.Column, previousIndex int) ([]query.Row, error) {
+// It also extracts the optional TableFragmentType field (present in progressive mode).
+// Returns the fragment type ("DataAppend", "DataReplace", or "" if absent) and the decoded rows.
+func decodeTableFragment(b []byte, decoder *json.Decoder, columns []query.Column, previousIndex int) (string, []query.Row, error) {
 
-	// skip properties until we reach the Rows property (guaranteed to be the last one)
+	// Scan properties until we reach "Rows" (guaranteed to be the last one).
+	// Along the way, capture TableFragmentType if present.
+	var fragmentType string
 	for {
 		tok, err := decoder.Token()
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
-		if tok == json.Token("Rows") {
+		key, ok := tok.(string)
+		if !ok {
+			continue
+		}
+		if key == "Rows" {
 			break
+		}
+		if key == "TableFragmentType" {
+			val, err := decoder.Token()
+			if err != nil {
+				return "", nil, err
+			}
+			if s, ok := val.(string); ok {
+				fragmentType = s
+			}
 		}
 	}
 
 	rows, err := decodeRows(b, decoder, columns, previousIndex)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
-	return rows, nil
+	return fragmentType, rows, nil
 }
 
 // decodeColumns decodes the columns of a table from the JSON.
@@ -285,36 +304,19 @@ func decodeNestedValue(decoder *json.Decoder, buffer []byte) (json.Token, error)
 	return json.Token(buffer[initialOffset:finalOffset]), nil
 }
 
-// validateDataSetHeader makes sure the dataset header is valid for V2 Fragmented Query.
-func validateDataSetHeader(dec *json.Decoder) error {
-	const HeaderVersion = "v2.0"
-	const NotProgressive = false
-	const IsFragmented = true
-	const ErrorReportingEndOfTable = "EndOfTable"
-
-	if err := assertToken(dec, json.Delim('{')); err != nil {
-		return err
+// parseDataSetHeader decodes the DataSetHeader frame and validates the
+// protocol version. Both progressive and fragmented (non-progressive) modes
+// are accepted; the caller uses the returned header to adjust parsing.
+func parseDataSetHeader(dec *json.Decoder) (DataSetHeader, error) {
+	var header DataSetHeader
+	if err := dec.Decode(&header); err != nil {
+		return header, err
 	}
 
-	if err := assertStringProperty(dec, "FrameType", json.Token(string(DataSetHeaderFrameType))); err != nil {
-		return err
+	if header.Version != "v2.0" {
+		return header, errors.ES(errors.OpQuery, errors.KInternal,
+			"unsupported DataSetHeader version %q, expected v2.0", header.Version)
 	}
 
-	if err := assertStringProperty(dec, "IsProgressive", json.Token(NotProgressive)); err != nil {
-		return err
-	}
-
-	if err := assertStringProperty(dec, "Version", json.Token(HeaderVersion)); err != nil {
-		return err
-	}
-
-	if err := assertStringProperty(dec, "IsFragmented", json.Token(IsFragmented)); err != nil {
-		return err
-	}
-
-	if err := assertStringProperty(dec, "ErrorReportingPlacement", json.Token(ErrorReportingEndOfTable)); err != nil {
-		return err
-	}
-
-	return nil
+	return header, nil
 }
