@@ -402,13 +402,17 @@ func TestStreamingDataSet_Progressive_GetRows(t *testing.T) {
 
 func TestStreamingDataSet_Progressive_DataReplace_Rejected(t *testing.T) {
 	t.Parallel()
-	// Build a progressive response where the primary table fragment uses DataReplace.
-	frames := "[{\"FrameType\":\"DataSetHeader\",\"IsProgressive\":true,\"Version\":\"v2.0\",\"IsFragmented\":false,\"ErrorReportingPlacement\":\"EndOfTable\"}\n" +
-		",{\"FrameType\":\"DataTable\",\"TableId\":0,\"TableKind\":\"QueryProperties\",\"TableName\":\"@ExtendedProperties\",\"Columns\":[{\"ColumnName\":\"TableId\",\"ColumnType\":\"int\"}],\"Rows\":[[1]]}\n" +
+	// Progressive response where the primary table fragment uses DataReplace.
+	// QueryProperties uses TableHeader+Fragment+Completion for consistency
+	// with the progressive protocol.
+	frames := "[{\"FrameType\":\"DataSetHeader\",\"IsProgressive\":true,\"Version\":\"v2.0\"}\n" +
+		",{\"FrameType\":\"TableHeader\",\"TableId\":0,\"TableKind\":\"QueryProperties\",\"TableName\":\"@ExtendedProperties\",\"Columns\":[{\"ColumnName\":\"TableId\",\"ColumnType\":\"int\"}]}\n" +
+		",{\"FrameType\":\"TableFragment\",\"TableId\":0,\"TableFragmentType\":\"DataAppend\",\"Rows\":[[1]]}\n" +
+		",{\"FrameType\":\"TableCompletion\",\"TableId\":0,\"RowCount\":1}\n" +
 		",{\"FrameType\":\"TableHeader\",\"TableId\":1,\"TableKind\":\"PrimaryResult\",\"TableName\":\"PrimaryResult\",\"Columns\":[{\"ColumnName\":\"A\",\"ColumnType\":\"int\"}]}\n" +
-		",{\"FrameType\":\"TableFragment\",\"TableId\":1,\"FieldCount\":1,\"TableFragmentType\":\"DataReplace\",\"Rows\":[[1]]}\n" +
-		",{\"FrameType\":\"TableCompletion\",\"TableId\":1,\"RowCount\":1,\"OneApiErrors\":[]}\n" +
-		",{\"FrameType\":\"DataSetCompletion\",\"HasErrors\":false,\"Cancelled\":false,\"OneApiErrors\":[]}\n" +
+		",{\"FrameType\":\"TableFragment\",\"TableId\":1,\"TableFragmentType\":\"DataReplace\",\"Rows\":[[1]]}\n" +
+		",{\"FrameType\":\"TableCompletion\",\"TableId\":1,\"RowCount\":1}\n" +
+		",{\"FrameType\":\"DataSetCompletion\",\"HasErrors\":false,\"Cancelled\":false}\n" +
 		"]\n"
 
 	reader := strings.NewReader(frames)

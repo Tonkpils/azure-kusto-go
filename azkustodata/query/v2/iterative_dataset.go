@@ -41,9 +41,6 @@ type iterativeDataset struct {
 
 	// jsonData is a channel that receives the raw JSON data from the Kusto service.
 	jsonData chan interface{}
-
-	// isProgressive indicates whether the dataset uses progressive mode.
-	isProgressive bool
 }
 
 // NewIterativeDataset creates a new IterativeDataset from a ReadCloser.
@@ -140,11 +137,9 @@ func readDataSet(d *iterativeDataset) error {
 
 	// The first frame should be a DataSetHeader.
 	if headerDec, _, err := nextFrame(d); err == nil {
-		header, parseErr := parseDataSetHeader(headerDec)
-		if parseErr != nil {
+		if _, parseErr := parseDataSetHeader(headerDec); parseErr != nil {
 			return parseErr
 		}
-		d.isProgressive = header.IsProgressive
 	} else {
 		return err
 	}
